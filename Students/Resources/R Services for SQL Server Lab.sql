@@ -4,47 +4,18 @@ Last Updated: 01/16/2017
 
 1. Using SQL Server Data from R with an ODBC-Like call
 https://msdn.microsoft.com/en-us/library/mt629161.aspx 
-In an R Client, try the following code:
-
-library(RevoScaleR)  
-  
-# Define the connection string  
-# This walkthrough requires SQL authentication  
-connStr <- "Driver=SQL Server;Server=<SQL_instance_name>;Database=<database_name>;Uid=<user_name>;Pwd=<user password>"  
-  
-# Set ComputeContext.   
-sqlShareDir <- paste("C:\\AllShare\\",Sys.getenv("USERNAME"),sep="")  
-sqlWait <- TRUE  
-sqlConsoleOutput <- FALSE  
-cc <- RxInSqlServer(connectionString = connStr, shareDir = sqlShareDir,   
-                    wait = sqlWait, consoleOutput = sqlConsoleOutput)  
-rxSetComputeContext(cc)  
-  
-#Define a DataSource   
-sampleDataQuery <- "select top 1000 tipped, fare_amount, passenger_count,trip_time_in_secs,trip_distance,   
-    pickup_datetime, dropoff_datetime, pickup_longitude, pickup_latitude, dropoff_longitude,    
-    dropoff_latitude from nyctaxi_sample"  
-  
-inDataSource <- RxSqlServerData(sqlQuery = sampleDataQuery, connectionString = connStr,   
-                                colClasses = c(pickup_longitude = "numeric", pickup_latitude = "numeric",   
-                                               dropoff_longitude = "numeric", dropoff_latitude = "numeric"),  
-                                rowsPerRead=500)  
-
-# Inspect the data
-rxGetVarInfo(data = inDataSource)   
-
-# Summarize fare_amount based on passenger_count
-start.time <- proc.time()  
-rxSummary(~fare_amount:F(passenger_count), data = inDataSource)  
-used.time <- proc.time() - start.time  
-print(paste("It takes CPU Time=", round(used.time[1]+used.time[2],2)," seconds, Elapsed Time=", round(used.time[3],2), " seconds to summarize the inDataSource.", sep=""))  
+ 
 
 2. Using SQL Server Data with R in SQL Server
+
 Prepare your system: 
+
 Ensure the AdventureWorks 2012 OLTP database is installed: 	https://msftdbprodsamples.codeplex.com/releases/view/55330 
+
 Download the Data File, put it here:
 	C:\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\MSSQL\DATA 
-Now "attach" that database file in SQL Server
+
+Now "attach" that database file in SQL Server. Ask the instructor if you have not done this before.
 */
 
 /* Check to see if R is Installed and available */
@@ -59,10 +30,9 @@ WITH RESULT SETS
 (([Installed] int not null));  
 GO
 
-/* If 0 or error, install R, then enable */
+-- If 0 or error, install R, then enable
 USE [master]
 GO
-
 EXEC sp_configure 'external scripts enabled', 1;
 RECONFIGURE WITH OVERRIDE;
 GO
@@ -156,6 +126,120 @@ b <- a$LineTotal
 c <- subset(InputDataSet, Name == "Georgia")
 d <- c$LineTotal
 print(t.test(b,d))'
+
+/*
+Package considerations: 
+*/
+
+-- This is your true R path for SQL Server
+EXEC sp_execute_external_script  @language =N'R'
+,  
+	@script=N'OutputDataSet <- data.frame(path = .libPaths())',    
+	@input_data_1 =N'select 1 as ReturnVal'  
+WITH RESULT SETS (([path] varchar(250) not null));  
+GO
+
+-- This is your true user for SQL Server R Services
+EXEC sp_execute_external_script  @language =N'R'
+,  
+	@script=N'OutputDataSet <- data.frame(fieldname = names(Sys.info()), value = Sys.info())',    
+	@input_data_1 =N'select 1 as ReturnVal'  
+WITH RESULT SETS (([fieldname] varchar(250) , [value] varchar(250)));  
+GO
+
+/* Performance Tuning */
+-- Examine SQL Server Satellite processes in Extended Events: 
+SELECT o.name
+, o.description  
+FROM sys.dm_xe_objects o  
+	INNER JOIN sys.dm_xe_packages p  
+		ON o.package_guid = p.guid  
+WHERE o.object_type = 'event'  
+	AND p.name = 'SQLSatellite'  
+ORDER BY o.name;   
+GO
+
+-- Check the DMV's you have for performance:
+SELECT * 
+FROM sys.dm_os_performance_counters 
+WHERE object_name LIKE '%External%'; 
+GO
+
+-- Control performance using Resource Governor - let's look at the usage first: 
+SELECT * FROM 
+sys.resource_governor_resource_pools 
+WHERE name = 'default' 
+
+SELECT * 
+FROM sys.resource_governor_external_resource_pools 
+WHERE name = 'default'  
+
+-- Now we'll balance the memory for internal/external pools
+ALTER RESOURCE POOL "default" 
+WITH (max_memory_percent = 60);  
+GO
+
+ALTER EXTERNAL RESOURCE POOL "default" 
+WITH (max_memory_percent = 40);  
+GO
+
+ALTER RESOURCE GOVERNOR reconfigure;  
+GO
+
+-- This affects all connections - better to create a classifier function:
+-- https://msdn.microsoft.com/en-us/library/mt703706.aspx 
+
+/* Security 
+Check the User Account Pool by looking in Windows for the MSSQLSERVER0n accounts, also SQLRUserGroup in Windows. Follow along with the instructor. 
+These are used for impersonation in R
+TDE Not supported at this time for R data
+More on security configuration: https://msdn.microsoft.com/en-us/library/mt590869.aspx 
+*/
+
+
+/* Package Management */
+
+-- This one is installed
+EXEC sp_execute_external_script  @language =N'R'
+,  
+	@script=N'OutputDataSet <- data.frame(path = require(dplyr))',    
+	@input_data_1 =N'select 1 as ReturnVal'  
+WITH RESULT SETS (([path] varchar(250) not null));  
+GO
+
+-- This one is not
+EXEC sp_execute_external_script  @language =N'R'
+,  
+	@script=N'OutputDataSet <- data.frame(path = require(lubridate))',    
+	@input_data_1 =N'select 1 as ReturnVal'  
+WITH RESULT SETS (([path] varchar(250) not null));  
+GO
+
+-- Packages must use the R environment from here: C:\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\R_SERVICES\bin> 
+
+/* 
+# An example of this in R:
+Sys.getenv()
+installed.packages
+
+# Install a package
+install.packages("xgboost")
+
+library(xgboost) 
+
+data(agaricus.train, package='xgboost')
+data(agaricus.test, package='xgboost')
+train <- agaricus.train
+test <- agaricus.test
+bst <- xgboost(data = train$data, label = train$label, max.depth = 2, eta = 1, nthread = 2, nround = 2, objective = "binary:logistic")
+#[0]	train-error:0.046522
+#[1]	train-error:0.022263
+pred <- predict(bst, test$data)
+pred
+
+https://msdn.microsoft.com/en-us/library/mt591989.aspx 
+
+*/
 
 /* And now to create a predictive model in SQL Server and R using Machine Learning:
 ML Lab Setup: 
@@ -283,114 +367,40 @@ GO
 exec model_evaluate;
 GO
 
-/*
-Package considerations: 
-*/
-
--- This is your true R path for SQL Server
-EXEC sp_execute_external_script  @language =N'R'
-,  
-	@script=N'OutputDataSet <- data.frame(path = .libPaths())',    
-	@input_data_1 =N'select 1 as ReturnVal'  
-WITH RESULT SETS (([path] varchar(250) not null));  
-GO
-
--- This is your true user for SQL Server R Services
-EXEC sp_execute_external_script  @language =N'R'
-,  
-	@script=N'OutputDataSet <- data.frame(fieldname = names(Sys.info()), value = Sys.info())',    
-	@input_data_1 =N'select 1 as ReturnVal'  
-WITH RESULT SETS (([fieldname] varchar(250) , [value] varchar(250)));  
-GO
-
--- This one is installed
-EXEC sp_execute_external_script  @language =N'R'
-,  
-	@script=N'OutputDataSet <- data.frame(path = require(dplyr))',    
-	@input_data_1 =N'select 1 as ReturnVal'  
-WITH RESULT SETS (([path] varchar(250) not null));  
-GO
-
--- This one is not
-EXEC sp_execute_external_script  @language =N'R'
-,  
-	@script=N'OutputDataSet <- data.frame(path = require(lubridate))',    
-	@input_data_1 =N'select 1 as ReturnVal'  
-WITH RESULT SETS (([path] varchar(250) not null));  
-GO
-
--- Packages must use the R environment from here: C:\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\R_SERVICES\bin> 
-
 /* 
-An example of this in R:
+If you would like to try an ODBC call to a Database, open an R client (not SQL Server) and run this code - change the names and passwords. 
+In an R Client, try the following code:
 
-Sys.getenv()
+library(RevoScaleR)  
+  
+# Define the connection string  
+# This walkthrough requires SQL authentication  
+connStr <- "Driver=SQL Server;Server=<SQL_instance_name>;Database=<database_name>;Uid=<user_name>;Pwd=<user password>"  
+  
+# Set ComputeContext.   
+sqlShareDir <- paste("C:\\AllShare\\",Sys.getenv("USERNAME"),sep="")  
+sqlWait <- TRUE  
+sqlConsoleOutput <- FALSE  
+cc <- RxInSqlServer(connectionString = connStr, shareDir = sqlShareDir,   
+                    wait = sqlWait, consoleOutput = sqlConsoleOutput)  
+rxSetComputeContext(cc)  
+  
+#Define a DataSource   
+sampleDataQuery <- "select top 1000 tipped, fare_amount, passenger_count,trip_time_in_secs,trip_distance,   
+    pickup_datetime, dropoff_datetime, pickup_longitude, pickup_latitude, dropoff_longitude,    
+    dropoff_latitude from nyctaxi_sample"  
+  
+inDataSource <- RxSqlServerData(sqlQuery = sampleDataQuery, connectionString = connStr,   
+                                colClasses = c(pickup_longitude = "numeric", pickup_latitude = "numeric",   
+                                               dropoff_longitude = "numeric", dropoff_latitude = "numeric"),  
+                                rowsPerRead=500)  
 
-installed.packages
+# Inspect the data
+rxGetVarInfo(data = inDataSource)   
 
-install.packages("xgboost")
-
-library(xgboost) 
-
-data(agaricus.train, package='xgboost')
-data(agaricus.test, package='xgboost')
-train <- agaricus.train
-test <- agaricus.test
-bst <- xgboost(data = train$data, label = train$label, max.depth = 2, eta = 1, nthread = 2, nround = 2, objective = "binary:logistic")
-#[0]	train-error:0.046522
-#[1]	train-error:0.022263
-pred <- predict(bst, test$data)
-pred
-
-https://msdn.microsoft.com/en-us/library/mt591989.aspx 
-
+# Summarize fare_amount based on passenger_count
+start.time <- proc.time()  
+rxSummary(~fare_amount:F(passenger_count), data = inDataSource)  
+used.time <- proc.time() - start.time  
+print(paste("It takes CPU Time=", round(used.time[1]+used.time[2],2)," seconds, Elapsed Time=", round(used.time[3],2), " seconds to summarize the inDataSource.", sep="")) 
 */
-
-/* Security 
-Check the User Account Pool by looking in Windows for the MSSQLSERVER0n accounts, also SQLRUserGroup. 
-These are used for impersonation in R
-TDE Not supported at this time for R data
-More on security configuration: https://msdn.microsoft.com/en-us/library/mt590869.aspx 
-*/
-
-/* Architecture */
--- Examine SQL Server Satellite processes in Extended Events: 
-SELECT o.name
-, o.description  
-FROM sys.dm_xe_objects o  
-	INNER JOIN sys.dm_xe_packages p  
-		ON o.package_guid = p.guid  
-WHERE o.object_type = 'event'  
-	AND p.name = 'SQLSatellite'  
-ORDER BY o.name;   
-GO
-
--- Check the DMV's you have for performance:
-SELECT * 
-FROM sys.dm_os_performance_counters 
-WHERE object_name LIKE '%External%'; 
-GO
-
--- Control performance using Resource Governor - let's look at the usage first: 
-SELECT * FROM 
-sys.resource_governor_resource_pools 
-WHERE name = 'default' 
-
-SELECT * 
-FROM sys.resource_governor_external_resource_pools 
-WHERE name = 'default'  
-
--- Now we'll balance the memory for internal/external pools
-ALTER RESOURCE POOL "default" 
-WITH (max_memory_percent = 60);  
-GO
-
-ALTER EXTERNAL RESOURCE POOL "default" 
-WITH (max_memory_percent = 40);  
-GO
-
-ALTER RESOURCE GOVERNOR reconfigure;  
-GO
-
--- This affects all connections - better to create a classifier function:
--- https://msdn.microsoft.com/en-us/library/mt703706.aspx 
