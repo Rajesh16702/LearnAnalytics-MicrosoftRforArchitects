@@ -1,3 +1,8 @@
+github structure:
+/Instructions - Contains any special instructions or videos for the delivery of this course
+/Instructor - Contains all PPT and Lab files for the Instructor
+/Students - Contains all PDF workbooks and Labs for the Student
+
 Welcome to this course on the Microsoft R for Architects. This course guides you through a series of modules that explain how to understand, implement and operationalize a Microsoft R solution. This course does cover a very basic overview of the R language, but focuses more on architecting and deploying a solution. We focus on this course on using Microsoft R in SQL Server.  
 
 The Folder Structure below explains how you can navigate this course. 
